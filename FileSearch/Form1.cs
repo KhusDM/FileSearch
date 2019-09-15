@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using System.IO;
 using System.Threading;
 using System.Diagnostics;
+using System.Configuration;
 
 namespace FileSearch
 {
@@ -17,8 +18,7 @@ namespace FileSearch
     {
         Begin,
         Stop,
-        Continue,
-        Done
+        Continue
     };
 
     public partial class Form1 : Form
@@ -30,7 +30,6 @@ namespace FileSearch
         private CancellationToken token;
         private ManualResetEventSlim limiter;
         private Stopwatch stopwatch;
-        private Task searchTask;
 
         private List<string> FilesFound { get; set; }
 
@@ -38,11 +37,17 @@ namespace FileSearch
         {
             InitializeComponent();
 
-            FilesFound = new List<string>();
             searchState = SearchState.Begin;
             limiter = new ManualResetEventSlim(true);
             stopwatch = new Stopwatch();
             timer1.Enabled = true;
+
+            FilesFound = new List<string>();
+
+            var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+            textBox1.Text = config.AppSettings.Settings["directory"].Value;
+            textBox2.Text = config.AppSettings.Settings["filePattern"].Value;
+            richTextBox1.Text = config.AppSettings.Settings["fileContent"].Value;
         }
 
         private void Button1_Click(object sender, EventArgs e)
@@ -72,52 +77,9 @@ namespace FileSearch
                     button1.Text = "Остановить поиск";
                     searchState = SearchState.Stop;
                     break;
-                case SearchState.Done:
-                    stopwatch.Stop();
-                    button1.Text = "";
-                    button1.Enabled = false;
-                    searchState = SearchState.Begin;
-                    break;
                 default: break;
             }
         }
-
-        //private void DirSearch(string startDirectory, CancellationToken token)
-        //{
-        //    try
-        //    {
-        //        foreach (string directory in Directory.GetDirectories(startDirectory))
-        //        {
-        //            foreach (string file in Directory.GetFiles(directory, searchPattern))
-        //            {
-        //                string fileText = "";
-        //                using (FileStream fileStream = new FileStream(file, FileMode.Open))
-        //                {
-        //                    label4.Text = file;
-        //                    using (StreamReader streamReader = new StreamReader(fileStream))
-        //                    {
-        //                        if (token.IsCancellationRequested) return;
-        //                        limiter.Wait();
-
-        //                        fileText = streamReader.ReadToEnd();
-        //                    }
-        //                }
-
-        //                if (fileText.Contains(richTextBox1.Text))
-        //                    FilesFound.Add(file);
-
-        //                processedFiles++;
-        //                label5.Text = processedFiles.ToString();
-        //            }
-
-        //            DirSearch(directory, token);
-        //        }
-        //    }
-        //    catch (System.Exception excpt)
-        //    {
-        //        Console.WriteLine(excpt.Message);
-        //    }
-        //}
 
         private void DirSearch(string startDirectory, CancellationToken token)
         {
@@ -128,6 +90,7 @@ namespace FileSearch
                     string fileText = "";
                     using (FileStream fileStream = new FileStream(file, FileMode.Open))
                     {
+                        if (token.IsCancellationRequested) return;
                         label4.Text = file;
                         using (StreamReader streamReader = new StreamReader(fileStream))
                         {
@@ -139,14 +102,20 @@ namespace FileSearch
                     }
 
                     if (fileText.Contains(richTextBox1.Text))
+                    {
+                        if (token.IsCancellationRequested) return;
+
                         FilesFound.Add(file);
+                    }
 
                     processedFiles++;
+                    if (token.IsCancellationRequested) return;
                     label5.Text = processedFiles.ToString();
                 }
 
                 foreach (string directory in Directory.GetDirectories(startDirectory))
                 {
+                    if (token.IsCancellationRequested) return;
                     DirSearch(directory, token);
                 }
             }
@@ -158,24 +127,33 @@ namespace FileSearch
 
         private async void DirSearchAsync(string startDirectory, CancellationToken token)
         {
-            if (token.IsCancellationRequested) return;
-
-            await Task.Run(() => DirSearch(startDirectory, token));
-            searchState = SearchState.Done;
-            Button1_Click(new object(), new EventArgs());
+            await Task.Run(() => DirSearch(startDirectory, token)).ContinueWith((task) =>
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    stopwatch.Stop();
+                    button1.Text = "";
+                    button1.Enabled = false;
+                    searchState = SearchState.Begin;
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
         private void Button2_Click(object sender, EventArgs e)
         {
-            cts.Cancel();
-            if (!limiter.IsSet)
-                limiter.Set();
+            if (searchState != SearchState.Begin)
+            {
+                cts.Cancel();
+                if (!limiter.IsSet)
+                    limiter.Set();
+
+                searchState = SearchState.Begin;
+            }
 
             FilesFound.Clear();
             processedFiles = 0;
             label4.Text = "";
             button1.Enabled = true;
-            searchState = SearchState.Begin;
 
             Button1_Click(sender, e);
         }
@@ -188,6 +166,23 @@ namespace FileSearch
               timeSpan.Milliseconds / 10);
 
             label6.Text = elapsedTime;
+
+            string tree = "";
+            foreach (var file in FilesFound)
+            {
+                //re
+            }
+        }
+
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+            config.AppSettings.Settings["directory"].Value = textBox1.Text;
+            config.AppSettings.Settings["filePattern"].Value = textBox2.Text;
+            config.AppSettings.Settings["fileContent"].Value = richTextBox1.Text;
+            config.Save();
+
+            ConfigurationManager.RefreshSection("appSettings");
         }
     }
 }
